@@ -585,7 +585,7 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
                          basethick=2, zscale=1.0, fileformat="STLb",
                          tile_centered=False, CPU_cores_to_use=0,
                          max_cells_for_memory_only=500*500*4,
-                         temp_folder = "tmp",
+                         temp_folder = "tmp",   
                          zip_file_name="terrain",
                          no_bottom=False,
                          bottom_image=None,
