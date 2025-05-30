@@ -36,6 +36,7 @@ from stl import mesh                       # pip install numpy-stl
 import random, pathlib
 from shutil import rmtree
 import zipfile
+import trimesh
 
 
 from touchterrain.common.config import EE_ACCOUNT,EE_CREDS,EE_PROJECT
@@ -2085,9 +2086,54 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
         obj.writelines(f_lines)
 
     print(f"Wrote coloured OBJ to {obj_path}")
-        # remove folder
-    rmtree(folder)
     # ----------------------------------------------------------------------
+    # Break up hexagon tiles
+    # ----------------------------------------------------------------------
+    print("Breaking up hexagon tiles into OBJ files ...")
+    # 1 — load the coloured OBJ we just wrote
+    big = trimesh.load_mesh(obj_path, process=False)   # keeps per-vertex colours
+
+    # Convert hex tiles (which are still in lat/lon) into projected metres like the DEM
+    hex_gdf = gpd.GeoDataFrame(geometry=[shape(h) for h in tiles_outlines], crs="EPSG:4326")
+    hex_gdf = hex_gdf.to_crs(epsg)
+    # 2 — re-project every hex outline into STL mm-space
+    # hex_polys_stl = [
+    #     Polygon(transform(_to_stl_mm, shape(h)))           # tiles_outlines is geoJSON list
+    #     for h in tiles_outlines
+    # ]
+    hex_polys_stl = [Polygon(transform(_to_stl_mm, h)) for h in hex_gdf.geometry]
+    # 3 — quick spatial lookup: face centroids in XY
+    centroids_xy = big.vertices[big.faces].mean(axis=1)[:, :2]
+
+    print("Big mesh bounds (X/Y):", big.bounds[:, :2])
+    print("Hex union bounds:", gpd.GeoSeries(hex_polys_stl).total_bounds)
+    # 4 — loop over all hexes, peel out the faces that belong inside
+    for hx_i, hx_poly in enumerate(hex_polys_stl, start=1):
+        print(f"Processing hexagon #{hx_i} ...")
+        mask = np.array([hx_poly.contains(Point(*c)) for c in centroids_xy])
+        if not mask.any():
+            print(f"  Hexagon #{hx_i} has no triangles in it, skipping.")
+            continue                              # no triangles in this hex
+
+        sub = big.submesh([np.nonzero(mask)[0]], append=True)
+
+        # 5 — re-paint side & bottom faces to neutral grey
+        top_faces = sub.face_normals[:, 2] > 0.5           # upward-looking normals
+        neutral = np.array([0.6, 0.6, 0.6, 1.0]) * 255
+
+        if sub.visual.vertex_colors is None:               # safety: build blank array
+            sub.visual.vertex_colors = np.full((len(sub.vertices), 4), neutral, dtype=np.uint8)
+
+        side_bot_v = np.unique(sub.faces[~top_faces].ravel())
+        sub.visual.vertex_colors[side_bot_v] = neutral.astype(np.uint8)
+
+        # 6 — export
+        out_hex = obj_path.with_name(f"{obj_path.stem}_hex{hx_i}.obj")
+        sub.export(out_hex)
+        print(f"✓ wrote hex-mesh #{hx_i}: {out_hex}")
+    # ----------------------------------------------------------------------
+    # remove folder
+    rmtree(folder)
 
     # return total  size in Mega bytes and location of zip file
     return total_size, full_zip_file_name
