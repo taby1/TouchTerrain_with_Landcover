@@ -30,6 +30,7 @@ from zipfile import ZipFile
 import http.client
 import numpy
 from touchterrain.common.config import EE_ACCOUNT,EE_CREDS,EE_PROJECT
+from touchterrain.common.hex_tesselate import hex_tile_geojson  # hex tesselation for tiles
 
 DEV_MODE = False
 #DEV_MODE = True  # will use modules in local touchterrain folder instead of installed ones
@@ -727,88 +728,89 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     # get polygon data, either from GeoJSON (or just it's coordinates as a list) or from kml URL or file
     #
     clip_poly_coords = None # list of lat/lons, will create ee.Feature used for clipping the terrain image
-    if polygon != None:
 
-        # If we have a GeoJSON and also a kml
-        if polyURL != None and polyURL != '':
-            pr("Warning: polygon via Google Drive KML will be ignored b/c a GeoJSON polygon was also given!")
-        elif poly_file != None and poly_file != '':
-             pr("Warning: polygon via KML file will be ignored b/c a GeoJSON polygon was also given!")
+    # If we have a GeoJSON and also a kml
+    if polyURL != None and polyURL != '':
+        pr("Warning: polygon via Google Drive KML will be ignored b/c a GeoJSON polygon was also given!")
+    elif poly_file != None and poly_file != '':
+            pr("Warning: polygon via KML file will be ignored b/c a GeoJSON polygon was also given!")
 
-        # Check if we have a GeoJSON polygon (i.e. a dict)  or at least a coordinate list
-        # ex: {"coordinates": [[[60.48766, -81.597101], [60.571116, -81.598891], ...]], "type": "Polygon"}
-        if isinstance(polygon, dict):
-            assert polygon["type"] == 'Polygon', f"Error: dict is not a GeoJSON polygon: {polygon}"
+    polygon, tiles_outlines = hex_tile_geojson(polygon, hex_diam=2000, orientation="pointy", outline_expand=200)
 
-            # Extract polygon coordinates (throw away [1] which would be a doughnut hole)
-            clip_poly_coords = polygon["coordinates"][0] # ignore holes, which would be in 1,2, ...
-        elif isinstance(polygon, list): # maybe it's just the coordinates? [[60.48766, -81.597101], [60.571116, -81.598891], ...]
-            clip_poly_coords = polygon[0]
-        else:
-            assert False, f"Error: coordinate format must be: [[[x,y], [x,y], ...]] not {polygon}"
+    # Check if we have a GeoJSON polygon (i.e. a dict)  or at least a coordinate list
+    # ex: {"coordinates": [[[60.48766, -81.597101], [60.571116, -81.598891], ...]], "type": "Polygon"}
+    if isinstance(polygon, dict):
+        assert polygon["type"] == 'Polygon', f"Error: dict is not a GeoJSON polygon: {polygon}"
 
-        logging.info("Using GeoJSON polygon for masking with " + str(len(clip_poly_coords)) + " points")
+        # Extract polygon coordinates (throw away [1] which would be a doughnut hole)
+        clip_poly_coords = polygon["coordinates"][0] # ignore holes, which would be in 1,2, ...
+    elif isinstance(polygon, list): # maybe it's just the coordinates? [[60.48766, -81.597101], [60.571116, -81.598891], ...]
+        clip_poly_coords = polygon[0]
+    else:
+        assert False, f"Error: coordinate format must be: [[[x,y], [x,y], ...]] not {polygon}"
 
-        # make area selection box from bounding box of polygon
-        trlat, trlon, bllat, bllon = get_bounding_box(clip_poly_coords)
+    logging.info("Using GeoJSON polygon for masking with " + str(len(clip_poly_coords)) + " points")
 
-        # Hack: If we only have 5 points forming a rectangle just use the bounding box and forget about the polyon
-        # Otherwise a rectangle digitized via gee ends up as a slightly sheared rectangle
-        # This does assume a certain order, which seems to be the same for gee rectangles no matter how they are digitized:
-        # Feb 2023: geemap appearently changed the order of the points, so I re-wrote this
+    # make area selection box from bounding box of polygon
+    trlat, trlon, bllat, bllon = get_bounding_box(clip_poly_coords)
 
-        # [-98.951111, 27.505835],  p0 0 1
-        # [-98.503418, 27.505835],  p1 0 1
-        # [-98.503418, 27.678664],  p2 0 1
-        # [-98.951111, 27.678664],  p3 0 1
-        # [-98.951111, 27.505835],  ignored, same as p0
+    # Hack: If we only have 5 points forming a rectangle just use the bounding box and forget about the polyon
+    # Otherwise a rectangle digitized via gee ends up as a slightly sheared rectangle
+    # This does assume a certain order, which seems to be the same for gee rectangles no matter how they are digitized:
+    # Feb 2023: geemap appearently changed the order of the points, so I re-wrote this
 
-        if len(clip_poly_coords) == 5: # is it a 5 point geemap box polygon: 4 points + overlap with first
-            #print("5 point clip polygon is", clip_poly_coords)
-            p = clip_poly_coords  # p[0], p[1],  etc., p[x][0] is lat p[x][1] is lon
-            if p[0][0] == p[3][0] and p[1][0] == p[2][0] and p[0][1] == p[1][1] and p[2][1] == p[3][1]:
-                print("ignoring geemap box polygon, using bounding box", trlat, trlon, bllat, bllon)
-                clip_poly_coords = None
+    # [-98.951111, 27.505835],  p0 0 1
+    # [-98.503418, 27.505835],  p1 0 1
+    # [-98.503418, 27.678664],  p2 0 1
+    # [-98.951111, 27.678664],  p3 0 1
+    # [-98.951111, 27.505835],  ignored, same as p0
+
+    if len(clip_poly_coords) == 5: # is it a 5 point geemap box polygon: 4 points + overlap with first
+        #print("5 point clip polygon is", clip_poly_coords)
+        p = clip_poly_coords  # p[0], p[1],  etc., p[x][0] is lat p[x][1] is lon
+        if p[0][0] == p[3][0] and p[1][0] == p[2][0] and p[0][1] == p[1][1] and p[2][1] == p[3][1]:
+            print("ignoring geemap box polygon, using bounding box", trlat, trlon, bllat, bllon)
+            clip_poly_coords = None
 
     # Get poly from a KML file via google drive URL
     #TODO: TEST THIS!!!!!!
-    elif polyURL != None and polyURL != '':
-        import re, requests
-        pattern = r".*[^-\w]([-\w]{25,})[^-\w]?.*" # https://stackoverflow.com/questions/16840038/easiest-way-to-get-file-id-from-url-on-google-apps-script
-        matches = re.search(pattern, polyURL)
-        if matches and len(matches.groups()) == 1: # need to have exactly one group match
-            file_URL = "https://docs.google.com/uc?export=download&id=" + matches.group(1)
-        else:
-            assert False, "Error: polyURL is invalid: " + polyURL
+    # elif polyURL != None and polyURL != '':
+    #     import re, requests
+    #     pattern = r".*[^-\w]([-\w]{25,})[^-\w]?.*" # https://stackoverflow.com/questions/16840038/easiest-way-to-get-file-id-from-url-on-google-apps-script
+    #     matches = re.search(pattern, polyURL)
+    #     if matches and len(matches.groups()) == 1: # need to have exactly one group match
+    #         file_URL = "https://docs.google.com/uc?export=download&id=" + matches.group(1)
+    #     else:
+    #         assert False, "Error: polyURL is invalid: " + polyURL
 
-        try:
-            r = requests.get(file_URL)
-            r.raise_for_status()
-        except Exception as e:
-            pr("Error: GDrive kml download failed", e, " - falling back to region box", trlat, trlon, bllat, bllon)
-        else:
-            t = r.text
-            clip_poly_coords, msg = get_KML_poly_geometry(t)
-            if msg != None: # Either go a line instead of polygon (take but warn) or nothing (ignore)
-                logging.warning(msg + "(" + str(len(clip_poly_coords)) + " points)")
-            else:
-                logging.info("Read GDrive KML polygon with " + str(len(clip_poly_coords)) + " points from " + polyURL)
+    #     try:
+    #         r = requests.get(file_URL)
+    #         r.raise_for_status()
+    #     except Exception as e:
+    #         pr("Error: GDrive kml download failed", e, " - falling back to region box", trlat, trlon, bllat, bllon)
+    #     else:
+    #         t = r.text
+    #         clip_poly_coords, msg = get_KML_poly_geometry(t)
+    #         if msg != None: # Either go a line instead of polygon (take but warn) or nothing (ignore)
+    #             logging.warning(msg + "(" + str(len(clip_poly_coords)) + " points)")
+    #         else:
+    #             logging.info("Read GDrive KML polygon with " + str(len(clip_poly_coords)) + " points from " + polyURL)
 
-    elif poly_file != None and poly_file != '':
-        try:
-            with open(poly_file, "r") as pf:
-                poly_file_str = pf.read()
-        except Exception as e:
-            pr("Read Error with kml file", poly_file, ":", e, " - falling back to region box", trlat, trlon, bllat, bllon)
-        else:
-            clip_poly_coords, msg = get_KML_poly_geometry(poly_file_str)
-            if msg != None: # Either got a line instead of polygon (take but warn) or nothing (ignore)
-                logging.warning(msg + "(" + str(len(clip_poly_coords)) + " points)")
-            else:
-                logging.info("Read file KML polygon with " + str(len(clip_poly_coords)) + " points from " + poly_file)
+    # elif poly_file != None and poly_file != '':
+    #     try:
+    #         with open(poly_file, "r") as pf:
+    #             poly_file_str = pf.read()
+    #     except Exception as e:
+    #         pr("Read Error with kml file", poly_file, ":", e, " - falling back to region box", trlat, trlon, bllat, bllon)
+    #     else:
+    #         clip_poly_coords, msg = get_KML_poly_geometry(poly_file_str)
+    #         if msg != None: # Either got a line instead of polygon (take but warn) or nothing (ignore)
+    #             logging.warning(msg + "(" + str(len(clip_poly_coords)) + " points)")
+    #         else:
+    #             logging.info("Read file KML polygon with " + str(len(clip_poly_coords)) + " points from " + poly_file)
 
-                # make area selection box from bounding box of polygon
-                trlat, trlon, bllat, bllon = get_bounding_box(clip_poly_coords)
+    #             # make area selection box from bounding box of polygon
+    #             trlat, trlon, bllat, bllon = get_bounding_box(clip_poly_coords)
 
 
     # end of polygon stuff

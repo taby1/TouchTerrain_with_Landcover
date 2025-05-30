@@ -4,7 +4,7 @@ from typing import Tuple, Literal, List, Dict
 
 import numpy as np
 import geopandas as gpd
-from shapely.geometry import shape, Polygon, Point
+from shapely.geometry import shape, Polygon, Point, mapping
 from shapely.ops import unary_union
 from pyproj import CRS
 
@@ -90,6 +90,58 @@ def hex_tile(
     )
 
     return hexes_gdf.to_crs(4326), outline_gdf.to_crs(4326)
+
+def hex_tile_geojson(
+    aoi_geojson: Dict,
+    scale: float = 1.0,
+    hex_diam: float = 250,
+    projection: str | None = None,
+    orientation: str = "pointy",
+    keep_rule: str = "intersect",
+    outline_expand: float = 0.0,
+) -> Tuple[Dict, List[Dict]]:
+    """
+    Wrapper around `hex_tile` that returns raw GeoJSON polygons.
+
+    Returns
+    -------
+    outline_geojson : GeoJSON Polygon of the union of all tiles
+    tiles_geojson   : list[GeoJSON Polygon] – one per hex tile
+    """
+    hexes_gdf, outline_gdf = hex_tile(
+        aoi_geojson,
+        scale=scale,
+        hex_diam=hex_diam,
+        projection=projection,
+        orientation=orientation,
+        keep_rule=keep_rule,
+    )
+
+    # outline (may be MultiPolygon if the grid is disjoint)
+    outline_geom = outline_gdf.geometry.iloc[0]
+
+    if outline_expand > 0:
+        proj_crs = CRS.from_user_input(projection or utm_for_geometry(shape(aoi_geojson)))
+        outline_geom = (
+            gpd.GeoSeries([outline_geom], crs=4326)
+            .to_crs(proj_crs)
+            .buffer(outline_expand)
+            .to_crs(4326)
+            .iloc[0]
+        )
+    outline_geo  = mapping(outline_geom)
+
+    # collapse single-part MultiPolygons to Polygon
+    # if outline_geo["type"] == "MultiPolygon" and len(outline_geo["coordinates"]) == 1:
+    if outline_geo["type"] == "MultiPolygon":
+        outline_geo["type"]        = "Polygon"
+        outline_geo["coordinates"] = outline_geo["coordinates"][0]
+
+    # individual tiles
+    tiles_geo = [mapping(g) for g in hexes_gdf.geometry]
+
+    return outline_geo, tiles_geo
+
 
 
 def show_tiling(aoi_json, hexes, outline, landcover=None, title=""):
