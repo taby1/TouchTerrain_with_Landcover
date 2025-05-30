@@ -1870,9 +1870,10 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
 
 
         pr("\ntotal size for all tiles:", round(total_size, 1), "Mb")
+        
 
         # delete all the GDAL geotiff stuff
-        del npim
+        # del npim
         del band
         dem = None #  Python GDAL's way of closing/freeing the raster, needed to be able to delete the inital geotiff
 
@@ -1901,7 +1902,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
                     logger.error("Error removing" + str(fname) + " " + str(e))
             else:
                 del buf # delete buffer
-
 
     # end of: if fileformat != "GeoTiff"
 
@@ -1964,13 +1964,22 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     # 1 – make sure we’re in the same projected CRS (metres) as the DEM/STL logic
     gdf_m = gdf_final.to_crs(epsg)      # already metres, but call is idempotent
 
+    px = abs(geo_transform[1])      # cell width   (m)
+    py = abs(geo_transform[5])      # cell height  (m)
+    print("px, py:", px, py)
     # 2 – build an affine that maps “metres in EPSG” → “millimetres in STL”
     ulx, uly = geo_transform[0], geo_transform[3]          # upper-left corner of raster
+
+    rows = npim.shape[0]                # total number of rows (south-to-north)
+    bly = geo_transform[3] - rows * py                  # UL-Y – full raster height
+
     mm_per_m = 1000.0 / print3D_scale_number               # 1 model mm equals N real metres
 
     def _to_stl_mm(x, y, z=None):
-        x_mm = (x - ulx) * mm_per_m
-        y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
+        # x_mm = (x - ulx) * mm_per_m
+        # y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
+        x_mm = (x - ulx - px / 2.0) * mm_per_m
+        y_mm = (y - bly - py / 2.0) * mm_per_m   # one flip (north→south) already!
         if tile_centered:                # optional global centring
             x_mm -= print3D_width_total_mm  / 2.0
             y_mm -= print3D_height_total_mm / 2.0
@@ -2037,6 +2046,13 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
         colours.append(hit)
     colours = np.asarray(colours)       # (N,3)
 
+
+    print("Extents of texture and STL in common coordinates:")
+    print(m.vectors.reshape(-1,3)[:, :2].min(axis=0),  # STL XY min
+    m.vectors.reshape(-1,3)[:, :2].max(axis=0))  # STL XY max
+
+    print(gdf_stl.total_bounds[:2],                   # land-cover XY min
+        gdf_stl.total_bounds[2:])                   # land-cover XY max
     # ---------------------------------------------------------------------
     # 5.  deduplicate vertices ⇒ OBJ “v” list, build “f” indices
     # ---------------------------------------------------------------------
