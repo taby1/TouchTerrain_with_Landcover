@@ -1978,8 +1978,10 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     def _to_stl_mm(x, y, z=None):
         # x_mm = (x - ulx) * mm_per_m
         # y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
-        x_mm = (x - ulx - px / 2.0) * mm_per_m
-        y_mm = (y - bly - py / 2.0) * mm_per_m   # one flip (north→south) already!
+        # x_mm = (x - ulx - px / 2.0) * mm_per_m
+        # y_mm = (y - bly - py / 2.0) * mm_per_m   # one flip (north→south) already!
+        x_mm = (x - ulx) * mm_per_m
+        y_mm = (y - bly - py * 2) * mm_per_m   # one flip (north→south) already!
         if tile_centered:                # optional global centring
             x_mm -= print3D_width_total_mm  / 2.0
             y_mm -= print3D_height_total_mm / 2.0
