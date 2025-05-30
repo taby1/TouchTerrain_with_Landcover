@@ -29,8 +29,14 @@ import io
 from zipfile import ZipFile
 import http.client
 import numpy
+import geopandas as gpd
+from shapely.geometry import shape, Polygon, MultiPolygon
+from shapely.ops import transform   # one-line coordinate munger
+
 from touchterrain.common.config import EE_ACCOUNT,EE_CREDS,EE_PROJECT
 from touchterrain.common.hex_tesselate import hex_tile_geojson  # hex tesselation for tiles
+from touchterrain.common.landcover_osm import get_osm_landcover  # get landcover polygons from OSM
+from touchterrain.common.postprocess_cover import refine_cover_layer  # postprocess landcover polygons
 
 DEV_MODE = False
 #DEV_MODE = True  # will use modules in local touchterrain folder instead of installed ones
@@ -710,13 +716,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     log_file_handler.setFormatter(formatter)
     logger.addHandler(log_file_handler)
 
-    # number of tiles in EW (x,long) and NS (y,lat), must be ints
-    num_tiles = [int(ntilesx), int(ntilesy)]
-
-    if only != None:
-        assert only[0] > 0 and only[0] <= num_tiles[0], "Error: x index of only tile out of range"
-        assert only[1] > 0 and only[1] <= num_tiles[1], "Error: y index of only tile out of range"
-
     # horizontal size of "cells" on the 3D printed model (realistically: the diameter of the nozzle)
     print3D_resolution_mm = printres
 
@@ -736,6 +735,14 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
             pr("Warning: polygon via KML file will be ignored b/c a GeoJSON polygon was also given!")
 
     polygon, tiles_outlines = hex_tile_geojson(polygon, hex_diam=2000, orientation="pointy", outline_expand=200)
+
+    # number of tiles in EW (x,long) and NS (y,lat), must be ints
+    num_tiles = [int(ntilesx), int(ntilesy)]
+    # num_tiles = len(tiles_outlines)
+
+    # if only != None:
+    #     assert only[0] > 0 and only[0] <= num_tiles[0], "Error: x index of only tile out of range"
+    #     assert only[1] > 0 and only[1] <= num_tiles[1], "Error: y index of only tile out of range"
 
     # Check if we have a GeoJSON polygon (i.e. a dict)  or at least a coordinate list
     # ex: {"coordinates": [[[60.48766, -81.597101], [60.571116, -81.598891], ...]], "type": "Polygon"}
@@ -815,6 +822,7 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
 
     # end of polygon stuff
 
+    
 
 
     # This is needed to avoid python unbound error since offset_npim is currently only available for local DEMs in standalone python script
@@ -901,6 +909,24 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
                 pr(f"center at {center}, UTM{utm}{hemi}, {crs_str}")
         else:
             crs_str = "unprojected"
+
+        # --------- get landcover data from osm --------------------
+        gdf_raw = get_osm_landcover(polygon, out_crs=epsg)
+        aoi_web = (
+            gpd.GeoSeries([shape(polygon)], crs="EPSG:4326")
+                .to_crs(epsg)
+        )
+
+        gdf_final = refine_cover_layer(gdf_raw, aoi_web,
+                                    smooth_tol=100,
+                                    pixel_size=5)
+        # ax = gdf_final.plot(column="cover", figsize=(8, 8), alpha=0.6,
+        #             edgecolor="k", linewidth=0.3, legend=True)
+        # aoi_web.boundary.plot(ax=ax, color="red", linewidth=2)
+        # ax.set_title("All gaps filled – polygons reach AOI boundary")
+        # ax.set_axis_off()
+        # ----------------------------------------------------------
+
 
         # Although pretty good, this is still an approximation and the cell resolution to be
         # requested is therefore also not quite exact, so we need to adjust it after the EE raster is downloaded
@@ -1884,6 +1910,32 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
         if fileformat != "GeoTiff": # for now only for mesh output
             zip_file.write(plot_file_name, DEM_title + "_DEMandHistogram.png")
             pr("added histogram of elevation values as " + DEM_title + "_DEMandHistogram.png")
+
+    # ---------------- landcover texture export ----------------
+    # 1 – make sure we’re in the same projected CRS (metres) as the DEM/STL logic
+    gdf_m = gdf_final.to_crs(epsg)      # already metres, but call is idempotent
+
+    # 2 – build an affine that maps “metres in EPSG” → “millimetres in STL”
+    ulx, uly = geo_transform[0], geo_transform[3]          # upper-left corner of raster
+    mm_per_m = 1000.0 / print3D_scale_number               # 1 model mm equals N real metres
+
+    def _to_stl_mm(x, y, z=None):
+        x_mm = (x - ulx) * mm_per_m
+        y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
+        if tile_centered:                # optional global centring
+            x_mm -= print3D_width_total_mm  / 2.0
+            y_mm -= print3D_height_total_mm / 2.0
+        return (x_mm, y_mm)
+
+    # 3 – apply the transform to every geometry; drop the CRS tag afterward
+    gdf_stl = gdf_m.copy()
+    gdf_stl["geometry"] = gdf_stl.geometry.apply(
+        lambda geom: transform(_to_stl_mm, geom)
+    )
+    gdf_stl.set_crs(None, inplace=True, allow_override=True)   # STL has no declared CRS
+
+    # gdf_stl now uses the exact same XY coordinates (millimetres) that appear in the STL mesh
+    # --------------------------------------------------------
 
 
     # add png from Google Maps static (ISU server doesn't use that b/c it eats too much into our free google maps allowance ...)

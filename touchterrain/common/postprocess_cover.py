@@ -9,7 +9,7 @@ import pandas as pd
 import rasterio
 from rasterio import features
 from scipy import ndimage as ndi
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import MultiPolygon, Polygon, shape
 from shapely.ops import unary_union
 
 # -------------------------------------------------------------------------

@@ -3,6 +3,7 @@ from typing import Union, Dict, Any
 
 from shapely.geometry import shape, Polygon, MultiPolygon
 import geopandas as gpd
+import pandas as pd
 from OSMPythonTools.overpass import Overpass
 
 def _geojson_to_polygon(aoi: Union[Dict[str, Any], Polygon, MultiPolygon]) -> Polygon | MultiPolygon:
@@ -53,11 +54,17 @@ def _elements_to_gdf(result) -> gpd.GeoDataFrame:
         attrs.append(tags)
 
     gdf = gpd.GeoDataFrame(attrs, geometry=geometries, crs="EPSG:4326")
-    gdf["cover"] = (
-        gdf.get("landuse")
-           .fillna(gdf.get("natural"))
-           # .fillna(gdf.get("landcover"))
-    )
+    # gdf["cover"] = (
+    #     gdf.get("landuse")
+    #        .fillna(gdf.get("natural"))
+    #        # .fillna(gdf.get("landcover"))
+    # )
+    cols = [c for c in ("landuse", "natural", "landcover") if c in gdf.columns]
+    if cols:                                      # at least one tag present
+        gdf["cover"] = gdf[cols].bfill(axis=1).iloc[:, 0]
+    else:                                         # none of the tags exist
+        gdf["cover"] = pd.Series(pd.NA, index=gdf.index, dtype="object")
+
     return gdf
 
 # ---------------------------------------------------------------------------
