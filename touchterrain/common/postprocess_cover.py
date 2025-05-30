@@ -1,14 +1,16 @@
-# postprocess_cover.py  ─────────────────────────────────────────────────────
+# postprocess_cover.py  ────────────────────────────────────────────────────
 from __future__ import annotations
-from typing import Union, List
+
+from typing import List, Union
+
 import geopandas as gpd
-import pandas as pd
-from shapely.geometry import Polygon, MultiPolygon, MultiPoint
-from shapely.ops import unary_union, voronoi_diagram
 import numpy as np
+import pandas as pd
 import rasterio
 from rasterio import features
 from scipy import ndimage as ndi
+from shapely.geometry import MultiPolygon, Polygon
+from shapely.ops import unary_union
 
 # -------------------------------------------------------------------------
 def remove_overlaps(
@@ -269,7 +271,7 @@ def dissolve_cover(
 def refine_cover_layer(
     gdf, aoi,
     cover_col="cover",
-    smooth_tol=100.0,
+    smooth_tol=10.0,
     pixel_size=5.0,
 ):
     work = remove_overlaps(gdf, cover_col=cover_col)
