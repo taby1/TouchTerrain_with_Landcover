@@ -30,8 +30,13 @@ from zipfile import ZipFile
 import http.client
 import numpy
 import geopandas as gpd
-from shapely.geometry import shape, Polygon, MultiPolygon
+from shapely.geometry import shape, Polygon, MultiPolygon, Point
 from shapely.ops import transform   # one-line coordinate munger
+from stl import mesh                       # pip install numpy-stl
+import random, pathlib
+from shutil import rmtree
+import zipfile
+
 
 from touchterrain.common.config import EE_ACCOUNT,EE_CREDS,EE_PROJECT
 from touchterrain.common.hex_tesselate import hex_tile_geojson  # hex tesselation for tiles
@@ -1850,6 +1855,7 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
                     fname = tile_info["temp_file"]
                     stl_list = add_to_stl_list(fname, stl_list)
                     zip_file.write(fname , tile_name) # write temp file into zip
+                    print("adding tile", tile_info["tile_no_x"], tile_info["tile_no_y"], "from temp file", fname, "to zip file", full_zip_file_name)
                 else:
                     zip_file.writestr(tile_name, buf) # buf is a string
                     stl_list = add_to_stl_list(buf, stl_list)
@@ -1884,7 +1890,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
                 html_file = k3d_render_to_html(stl_list, temp_folder, buffer=True)
             zip_file.write(html_file, "k3d_plot.html") # write into zip
 
-
         # file or buffer cleanup
         for p in processed_list:
             tile_info = p[0]
@@ -1910,32 +1915,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
         if fileformat != "GeoTiff": # for now only for mesh output
             zip_file.write(plot_file_name, DEM_title + "_DEMandHistogram.png")
             pr("added histogram of elevation values as " + DEM_title + "_DEMandHistogram.png")
-
-    # ---------------- landcover texture export ----------------
-    # 1 – make sure we’re in the same projected CRS (metres) as the DEM/STL logic
-    gdf_m = gdf_final.to_crs(epsg)      # already metres, but call is idempotent
-
-    # 2 – build an affine that maps “metres in EPSG” → “millimetres in STL”
-    ulx, uly = geo_transform[0], geo_transform[3]          # upper-left corner of raster
-    mm_per_m = 1000.0 / print3D_scale_number               # 1 model mm equals N real metres
-
-    def _to_stl_mm(x, y, z=None):
-        x_mm = (x - ulx) * mm_per_m
-        y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
-        if tile_centered:                # optional global centring
-            x_mm -= print3D_width_total_mm  / 2.0
-            y_mm -= print3D_height_total_mm / 2.0
-        return (x_mm, y_mm)
-
-    # 3 – apply the transform to every geometry; drop the CRS tag afterward
-    gdf_stl = gdf_m.copy()
-    gdf_stl["geometry"] = gdf_stl.geometry.apply(
-        lambda geom: transform(_to_stl_mm, geom)
-    )
-    gdf_stl.set_crs(None, inplace=True, allow_override=True)   # STL has no declared CRS
-
-    # gdf_stl now uses the exact same XY coordinates (millimetres) that appear in the STL mesh
-    # --------------------------------------------------------
 
 
     # add png from Google Maps static (ISU server doesn't use that b/c it eats too much into our free google maps allowance ...)
@@ -1980,6 +1959,117 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
             os.remove(plot_file_name)
         except Exception as e:
             print("Error removing plot_with_histogram.png " + str(plot_file_name) + " " + str(e), file=sys.stderr)
+
+    # ---------------- landcover texture export ----------------
+    # 1 – make sure we’re in the same projected CRS (metres) as the DEM/STL logic
+    gdf_m = gdf_final.to_crs(epsg)      # already metres, but call is idempotent
+
+    # 2 – build an affine that maps “metres in EPSG” → “millimetres in STL”
+    ulx, uly = geo_transform[0], geo_transform[3]          # upper-left corner of raster
+    mm_per_m = 1000.0 / print3D_scale_number               # 1 model mm equals N real metres
+
+    def _to_stl_mm(x, y, z=None):
+        x_mm = (x - ulx) * mm_per_m
+        y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
+        if tile_centered:                # optional global centring
+            x_mm -= print3D_width_total_mm  / 2.0
+            y_mm -= print3D_height_total_mm / 2.0
+        return (x_mm, y_mm)
+
+    # 3 – apply the transform to every geometry; drop the CRS tag afterward
+    gdf_stl = gdf_m.copy()
+    gdf_stl["geometry"] = gdf_stl.geometry.apply(
+        lambda geom: transform(_to_stl_mm, geom)
+    )
+    gdf_stl.set_crs(None, inplace=True, allow_override=True)   # STL has no declared CRS
+
+    # gdf_stl now uses the exact same XY coordinates (millimetres) that appear in the STL mesh
+    # --------------------------------------------------------
+    # convert to vertex-colored OBJ
+    # ---------------------------------------------------------------------
+    # 1.  locate the STL that TouchTerrain just wrote
+    #     (the script made only **one** tile and zipped nothing yet)
+    # ---------------------------------------------------------------------
+    # unzip zif file into a folder a
+    folder, file = os.path.splitext(full_zip_file_name) 
+    zip_ref = zipfile.ZipFile(full_zip_file_name, 'r')
+    zip_ref.extractall(folder)
+    zip_ref.close()
+
+    # get all stl files (tiles) in that folder
+    mesh_files = glob(folder + os.sep + "*.STL")
+
+
+    stl_path = pathlib.Path(temp_folder, "obj_export")  # first tile in the list
+    # stl_path = pathlib.Path(temp_folder, f"{zip_file_name}_tile_1_1.stl")
+    # assert stl_path.exists(), f"STL not found: {stl_path}"
+
+    # future OBJ will be saved next to it
+    obj_path = stl_path.with_suffix(".obj")
+
+    # ---------------------------------------------------------------------
+    # 2.  read triangles & flatten to a (N×3) list of vertices
+    # ---------------------------------------------------------------------
+    m = mesh.Mesh.from_file(mesh_files[0])  # read the first STL file
+    verts_np = m.vectors.reshape(-1, 3)              # (n_tri*3, 3)  float64
+
+    # ---------------------------------------------------------------------
+    # 3.  prepare land-cover → colour dictionary  (0-1 floats)
+    # ---------------------------------------------------------------------
+    covers = gdf_stl["cover"].fillna("unknown").unique()
+    palette = {c: tuple(random.random() for _ in range(3)) for c in covers}
+    default_colour = (0.5, 0.5, 0.5)
+
+    # ---------------------------------------------------------------------
+    # 4.  spatial lookup: assign a colour to every vertex
+    #    • fast bounding-box filter via the GeoPandas spatial index
+    #    • then exact .contains() check
+    # ---------------------------------------------------------------------
+    sindex = gdf_stl.sindex
+    colours = []
+    for x, y, z in verts_np:
+        pt = Point(x, y)
+        hit = default_colour
+        for idx in sindex.intersection(pt.coords[0]):         # bbox candidates
+            if gdf_stl.iloc[idx].geometry.contains(pt):
+                hit = palette[gdf_stl.iloc[idx]["cover"]]
+                break
+        colours.append(hit)
+    colours = np.asarray(colours)       # (N,3)
+
+    # ---------------------------------------------------------------------
+    # 5.  deduplicate vertices ⇒ OBJ “v” list, build “f” indices
+    # ---------------------------------------------------------------------
+    vertex_index = {}          # (x,y,z) → obj_idx
+    v_lines, f_lines = [], []
+    next_idx = 1
+
+    for tri_i, tri in enumerate(m.vectors):
+        face = []
+        for v_local in range(3):
+            v_tuple = tuple(tri[v_local])
+            try:
+                idx = vertex_index[v_tuple]
+            except KeyError:
+                idx = next_idx
+                vertex_index[v_tuple] = idx
+                c = colours[tri_i * 3 + v_local]
+                v_lines.append(f"v {v_tuple[0]} {v_tuple[1]} {v_tuple[2]} {c[0]} {c[1]} {c[2]}\n")
+                next_idx += 1
+            face.append(idx)
+        f_lines.append(f"f {face[0]} {face[1]} {face[2]}\n")
+
+    # ---------------------------------------------------------------------
+    # 6.  write coloured OBJ   (per-vertex RGB extension, widely supported)
+    # ---------------------------------------------------------------------
+    with open(obj_path, "w") as obj:
+        obj.writelines(v_lines)
+        obj.writelines(f_lines)
+
+    print(f"Wrote coloured OBJ to {obj_path}")
+        # remove folder
+    rmtree(folder)
+    # ----------------------------------------------------------------------
 
     # return total  size in Mega bytes and location of zip file
     return total_size, full_zip_file_name
