@@ -38,6 +38,9 @@ from shutil import rmtree
 import zipfile
 import trimesh
 
+from matplotlib.colors import to_rgb
+from matplotlib import pyplot as plt
+
 
 from touchterrain.common.config import EE_ACCOUNT,EE_CREDS,EE_PROJECT
 from touchterrain.common.hex_tesselate import hex_tile_geojson  # hex tesselation for tiles
@@ -2090,47 +2093,89 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     # Break up hexagon tiles
     # ----------------------------------------------------------------------
     print("Breaking up hexagon tiles into OBJ files ...")
-    # 1 — load the coloured OBJ we just wrote
-    big = trimesh.load_mesh(obj_path, process=False)   # keeps per-vertex colours
+    # Load the colored OBJ
+    big = trimesh.load_mesh(obj_path, process=False)
 
-    # Convert hex tiles (which are still in lat/lon) into projected metres like the DEM
+    # Convert hex tiles to STL mm-space
     hex_gdf = gpd.GeoDataFrame(geometry=[shape(h) for h in tiles_outlines], crs="EPSG:4326")
     hex_gdf = hex_gdf.to_crs(epsg)
-    # 2 — re-project every hex outline into STL mm-space
-    # hex_polys_stl = [
-    #     Polygon(transform(_to_stl_mm, shape(h)))           # tiles_outlines is geoJSON list
-    #     for h in tiles_outlines
-    # ]
     hex_polys_stl = [Polygon(transform(_to_stl_mm, h)) for h in hex_gdf.geometry]
-    # 3 — quick spatial lookup: face centroids in XY
-    centroids_xy = big.vertices[big.faces].mean(axis=1)[:, :2]
 
-    print("Big mesh bounds (X/Y):", big.bounds[:, :2])
-    print("Hex union bounds:", gpd.GeoSeries(hex_polys_stl).total_bounds)
-    # 4 — loop over all hexes, peel out the faces that belong inside
+    # Get z-range and prepare colors
+    z_min, z_max = big.bounds[0][2], big.bounds[1][2]
+    padding = 10  # mm padding
+
+    # Create spatial index for original landcover polygons
+    sindex = gdf_stl.sindex
+
+    # Prepare color palette (same as original)
+    cover_types = gdf_stl["cover"].fillna("unknown").unique()
+
+    # Use a consistent colormap (e.g., matplotlib tab20)
+    cmap = plt.get_cmap('tab20')
+
+    palette = {
+        cover: (*[int(255*x) for x in to_rgb(cmap(i%20))], 255)
+        for i, cover in enumerate(cover_types)
+    }
+    default_color = (153, 153, 153, 255)  # neutral grey
+
+    # # Extract original face colors if they exist
+    # if hasattr(big.visual, 'vertex_colors'):
+    #     original_colors = big.visual.vertex_colors[big.faces]  # Get colors per face
+    #     has_colors = True
+    # else:
+    #     has_colors = False
+
     for hx_i, hx_poly in enumerate(hex_polys_stl, start=1):
-        print(f"Processing hexagon #{hx_i} ...")
-        mask = np.array([hx_poly.contains(Point(*c)) for c in centroids_xy])
-        if not mask.any():
-            print(f"  Hexagon #{hx_i} has no triangles in it, skipping.")
-            continue                              # no triangles in this hex
+        print(f"Processing hexagon #{hx_i}...")
+        
+        try:
+            # Create hex prism
+            hex_mesh = trimesh.creation.extrude_polygon(
+                polygon=hx_poly,
+                height=(z_max - z_min) + 2*padding,
+                transform=trimesh.transformations.translation_matrix([0, 0, z_min - padding])
+            )
+            
+            # Perform boolean intersection
+            tile_mesh = hex_mesh.intersection(big)
+            
+            if tile_mesh.is_empty:
+                print(f"  Hexagon #{hx_i} is empty, skipping")
+                continue
+            
+            # Initialize vertex colors (default grey)
+            colors = np.full((len(tile_mesh.vertices), 4), default_color)
 
-        sub = big.submesh([np.nonzero(mask)[0]], append=True)
-
-        # 5 — re-paint side & bottom faces to neutral grey
-        top_faces = sub.face_normals[:, 2] > 0.5           # upward-looking normals
-        neutral = np.array([0.6, 0.6, 0.6, 1.0]) * 255
-
-        if sub.visual.vertex_colors is None:               # safety: build blank array
-            sub.visual.vertex_colors = np.full((len(sub.vertices), 4), neutral, dtype=np.uint8)
-
-        side_bot_v = np.unique(sub.faces[~top_faces].ravel())
-        sub.visual.vertex_colors[side_bot_v] = neutral.astype(np.uint8)
-
-        # 6 — export
-        out_hex = obj_path.with_name(f"{obj_path.stem}_hex{hx_i}.obj")
-        sub.export(out_hex)
-        print(f"✓ wrote hex-mesh #{hx_i}: {out_hex}")
+            # tile_mesh.visual.vertex_colors = [255, 255, 255, 255]  # white base
+            top_faces = tile_mesh.face_normals[:,2] > 0.5
+            top_verts = np.unique(tile_mesh.faces[top_faces].ravel())
+        
+            # Assign colors to top vertices using spatial lookup
+            for vi in top_verts:
+                x, y, _ = tile_mesh.vertices[vi]
+                pt = Point(x, y)
+                
+                # Fast bounding box query first
+                possible = list(sindex.intersection(pt.coords[0]))
+                for idx in possible:
+                    if gdf_stl.iloc[idx].geometry.contains(pt):
+                        cover_type = gdf_stl.iloc[idx]["cover"]
+                        # colors[vi] = palette.get(cover_type, (153,153,153)), 255
+                        colors[vi] = palette.get(cover_type, default_color)
+                        break
+            tile_mesh.visual.vertex_colors = colors
+            # for face in tile_mesh.faces[top_faces]:
+            #     tile_mesh.visual.vertex_colors[face] = [100, 200, 100, 255]  # green top
+            # Export
+            out_path = obj_path.with_name(f"{obj_path.stem}_hex{hx_i}.obj")
+            tile_mesh.export(out_path)
+            print(f"✓ Hexagonal tile #{hx_i} exported: {out_path}")
+            
+        except Exception as e:
+            print(f"Failed on hex {hx_i}: {str(e)}")
+            continue
     # ----------------------------------------------------------------------
     # remove folder
     rmtree(folder)
