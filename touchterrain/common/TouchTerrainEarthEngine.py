@@ -743,7 +743,7 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     elif poly_file != None and poly_file != '':
             pr("Warning: polygon via KML file will be ignored b/c a GeoJSON polygon was also given!")
 
-    polygon, tiles_outlines = hex_tile_geojson(polygon, hex_diam=2000, orientation="pointy", outline_expand=200)
+    polygon, tiles_outlines = hex_tile_geojson(polygon, hex_diam=3000, orientation="pointy", outline_expand=200)
 
     # number of tiles in EW (x,long) and NS (y,lat), must be ints
     num_tiles = [int(ntilesx), int(ntilesy)]
