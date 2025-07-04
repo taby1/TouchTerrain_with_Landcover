@@ -590,6 +590,7 @@ def get_bounding_box(coords):
 
 
 
+
 def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=None, # all args are keywords, so I can use just **args in calls ...
                          polygon=None,
                          polyURL=None,
@@ -598,7 +599,7 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
                          bottom_elevation=None,
                          top_thickness=None,
                          printres=1.0, ntilesx=1, ntilesy=1, tilewidth=100,
-                         basethick=2, zscale=1.0, fileformat="STLb",
+                         basethick=2, zscale=1.0, fileformat="STLb", lateral_scale=10000,
                          tile_centered=False, CPU_cores_to_use=0,
                          max_cells_for_memory_only=500*500*4,
                          temp_folder = "tmp",   
@@ -788,51 +789,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
             print("ignoring geemap box polygon, using bounding box", trlat, trlon, bllat, bllon)
             clip_poly_coords = None
 
-    # Get poly from a KML file via google drive URL
-    #TODO: TEST THIS!!!!!!
-    # elif polyURL != None and polyURL != '':
-    #     import re, requests
-    #     pattern = r".*[^-\w]([-\w]{25,})[^-\w]?.*" # https://stackoverflow.com/questions/16840038/easiest-way-to-get-file-id-from-url-on-google-apps-script
-    #     matches = re.search(pattern, polyURL)
-    #     if matches and len(matches.groups()) == 1: # need to have exactly one group match
-    #         file_URL = "https://docs.google.com/uc?export=download&id=" + matches.group(1)
-    #     else:
-    #         assert False, "Error: polyURL is invalid: " + polyURL
-
-    #     try:
-    #         r = requests.get(file_URL)
-    #         r.raise_for_status()
-    #     except Exception as e:
-    #         pr("Error: GDrive kml download failed", e, " - falling back to region box", trlat, trlon, bllat, bllon)
-    #     else:
-    #         t = r.text
-    #         clip_poly_coords, msg = get_KML_poly_geometry(t)
-    #         if msg != None: # Either go a line instead of polygon (take but warn) or nothing (ignore)
-    #             logging.warning(msg + "(" + str(len(clip_poly_coords)) + " points)")
-    #         else:
-    #             logging.info("Read GDrive KML polygon with " + str(len(clip_poly_coords)) + " points from " + polyURL)
-
-    # elif poly_file != None and poly_file != '':
-    #     try:
-    #         with open(poly_file, "r") as pf:
-    #             poly_file_str = pf.read()
-    #     except Exception as e:
-    #         pr("Read Error with kml file", poly_file, ":", e, " - falling back to region box", trlat, trlon, bllat, bllon)
-    #     else:
-    #         clip_poly_coords, msg = get_KML_poly_geometry(poly_file_str)
-    #         if msg != None: # Either got a line instead of polygon (take but warn) or nothing (ignore)
-    #             logging.warning(msg + "(" + str(len(clip_poly_coords)) + " points)")
-    #         else:
-    #             logging.info("Read file KML polygon with " + str(len(clip_poly_coords)) + " points from " + poly_file)
-
-    #             # make area selection box from bounding box of polygon
-    #             trlat, trlon, bllat, bllon = get_bounding_box(clip_poly_coords)
-
-
-    # end of polygon stuff
-
-    
-
 
     # This is needed to avoid python unbound error since offset_npim is currently only available for local DEMs in standalone python script
     offset_npim = []
@@ -919,74 +875,35 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
         else:
             crs_str = "unprojected"
 
-        # --------- get landcover data from osm --------------------
-        gdf_raw = get_osm_landcover(polygon, out_crs=epsg)
-        aoi_web = (
-            gpd.GeoSeries([shape(polygon)], crs="EPSG:4326")
-                .to_crs(epsg)
-        )
+        # # Although pretty good, this is still an approximation and the cell resolution to be
+        # # requested is therefore also not quite exact, so we need to adjust it after the EE raster is downloaded
+        # latitude_in_m, longitude_in_m = arcDegr_in_meter(center[1]) # returns: (latitude_in_m, longitude_in_m)
+        # region_size_in_degrees = [abs(region[0][0]-region[1][0]), abs(region[0][1]-region[2][1]) ]
+        # pr("lon/lat size in degrees:",region_size_in_degrees)
+        # region_ratio_for_degrees =  region_size_in_degrees[1] / float(region_size_in_degrees[0])
 
-        gdf_final = refine_cover_layer(gdf_raw, aoi_web,
-                                    smooth_tol=100,
-                                    pixel_size=5)
-        # ax = gdf_final.plot(column="cover", figsize=(8, 8), alpha=0.6,
-        #             edgecolor="k", linewidth=0.3, legend=True)
-        # aoi_web.boundary.plot(ax=ax, color="red", linewidth=2)
-        # ax.set_title("All gaps filled – polygons reach AOI boundary")
-        # ax.set_axis_off()
-        # ----------------------------------------------------------
+        # #
+        # # figure out an (approximate) cell size to request from GEE
+        # # Once we got the GEE raster, we can redo the print res and tile height (for a given tile width) properly
+        # #
+        # region_size_in_meters = [region_size_in_degrees[0] * longitude_in_m, # 0 -> EW, width
+        #                          region_size_in_degrees[1] * latitude_in_m]  # 1 -> NS, height
+        # region_ratio =  region_size_in_meters[1] / float(region_size_in_meters[0])
 
+        # # if tilewidth_scale is given, overwrite tilewidth by region width / tilewidth_scale
+        # if tilewidth_scale != None:
+        #     tilewidth = region_size_in_meters[1] / tilewidth_scale * 1000 # new tilewidth in mm
+        #     pr("Overriding tilewidth using a tilewidth_scale of 1 :", tilewidth_scale, ", region width is", region_size_in_meters[1], "m, new tilewidth is", tilewidth, "(Note that the final scale may be slighly different!)")
 
-        # Although pretty good, this is still an approximation and the cell resolution to be
-        # requested is therefore also not quite exact, so we need to adjust it after the EE raster is downloaded
-        latitude_in_m, longitude_in_m = arcDegr_in_meter(center[1]) # returns: (latitude_in_m, longitude_in_m)
-        region_size_in_degrees = [abs(region[0][0]-region[1][0]), abs(region[0][1]-region[2][1]) ]
-        pr("lon/lat size in degrees:",region_size_in_degrees)
-        region_ratio_for_degrees =  region_size_in_degrees[1] / float(region_size_in_degrees[0])
+        # # width/height (in 2D) of 3D model of ONE TILE to be printed, in mm
+        # print3D_width_per_tile = tilewidth # EW
+        # print3D_height_per_tile = (print3D_width_per_tile * num_tiles[0] * region_ratio) / float(num_tiles[1]) # NS
 
-        #
-        # figure out an (approximate) cell size to request from GEE
-        # Once we got the GEE raster, we can redo the print res and tile height (for a given tile width) properly
-        #
-        region_size_in_meters = [region_size_in_degrees[0] * longitude_in_m, # 0 -> EW, width
-                                 region_size_in_degrees[1] * latitude_in_m]  # 1 -> NS, height
-        region_ratio =  region_size_in_meters[1] / float(region_size_in_meters[0])
+        # # width/height of full 3D model (all tiles together)
+        # print3D_width_total_mm =  print3D_width_per_tile * num_tiles[0] # width => EW
+        # print3D_height_total_mm = print3D_width_total_mm * region_ratio   # height => NS
 
-        # if tilewidth_scale is given, overwrite tilewidth by region width / tilewidth_scale
-        if tilewidth_scale != None:
-            tilewidth = region_size_in_meters[1] / tilewidth_scale * 1000 # new tilewidth in mm
-            pr("Overriding tilewidth using a tilewidth_scale of 1 :", tilewidth_scale, ", region width is", region_size_in_meters[1], "m, new tilewidth is", tilewidth, "(Note that the final scale may be slighly different!)")
-
-        # width/height (in 2D) of 3D model of ONE TILE to be printed, in mm
-        print3D_width_per_tile = tilewidth # EW
-        print3D_height_per_tile = (print3D_width_per_tile * num_tiles[0] * region_ratio) / float(num_tiles[1]) # NS
-
-        # width/height of full 3D model (all tiles together)
-        print3D_width_total_mm =  print3D_width_per_tile * num_tiles[0] # width => EW
-        print3D_height_total_mm = print3D_width_total_mm * region_ratio   # height => NS
-
-        if print3D_resolution_mm > 0:
-
-            # Get a cell size for EE
-
-            # number of samples needed to cover ALL tiles
-            num_samples_lat = print3D_width_total_mm  / float(print3D_resolution_mm) # width
-            num_samples_lon = print3D_height_total_mm / float(print3D_resolution_mm) # height
-            #pr(print3D_resolution,"mm print resolution => requested num samples (width x height):", num_samples_lat, "x",  num_samples_lon)
-
-            # get cell size (in meters) for request from ee # both should be the same
-            cell_size_meters_lat = region_size_in_meters[0] / num_samples_lat # width
-            cell_size_meters_lon = region_size_in_meters[1] / num_samples_lon # height
-
-
-            # Note: the resolution of the ee raster does not quite match the requested raster at this cell size;
-            # it's not bad, req: 1200 x 2235.85 i.e. 19.48 m cells => 1286 x 2282 which is good enough for me.
-            # This also affects the total tile width in mm, which I'll also adjust later
-            cell_size_m = cell_size_meters_lat # will later be used to calc the scale of the model
-            print("requesting", cell_size_m, "m resolution from EarthEngine")
-        else:
-            # print3D_resolution  <= 0 means: get whatever GEEs default is.
-            cell_size_m = 0
+        cell_size_m = 0
 
         #
         # Get a download URL for DEM from Earth Engine
@@ -1225,240 +1142,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     #
     # TODO: deal with clip polygon?  Done for KML (poly_file)
 
-    else:
-        filename = os.path.basename(importedDEM)
-
-        if bottom_elevation != None:
-            btxt = "and " + bottom_elevation
-        elif top_thickness != None:
-            btxt = "and " + top_thickness
-        else:
-            btxt = ""
-        pr("Log for creating", num_tiles[0], "x", num_tiles[1], "3D model tile(s) from", filename, btxt, "\n")
-        pr("started:", datetime.datetime.now().time().isoformat())
-
-        # If we have a KML file, use it to mask (clip) and crop the importedDEM
-        if poly_file != None and poly_file != '':
-            clipped_geotiff = "clipped_" + filename
-
-            try:
-                gdal.Warp(clipped_geotiff, filename,
-                    format='GTiff',
-                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE'],
-                    cutlineDSName=poly_file,
-                    cropToCutline=True,
-                    dstNodata=-32768)
-            except Exception as e:
-                pr("clipping", filename, "with", poly_file, "failed, using unclipped geotiff. ", e)
-            else:
-                pr("clipped", filename, "with", poly_file, "now using", clipped_geotiff, "instead")
-                folder = os.path.split(importedDEM)[0]
-                importedDEM = os.path.join(folder, clipped_geotiff)
-
-        # Make numpy array from imported geotiff
-        dem = gdal.Open(importedDEM)
-        band = dem.GetRasterBand(1)
-        npim = band.ReadAsArray().astype(numpy.float64) # top elevation values
-
-        # Read in offset mask file (Anson's stuff ...)
-        if offset_masks_lower is not None:
-            offset_dem = gdal.Open(offset_masks_lower[0][0])
-            offset_band = offset_dem.GetRasterBand(1)
-            offset_npim.append(offset_band.ReadAsArray().astype(numpy.float64))
-            del offset_band
-            offset_dem = None
-
-        # get the GDAL cell size in x (width), assumes cells are square!
-        tf = dem.GetGeoTransform()  # In a north up image, padfTransform[1] is the pixel width, and padfTransform[5] is the pixel height
-        # The upper left corner of the upper left pixel is at position (padfTransform[0],padfTransform[3]).
-        pw,ph = abs(tf[1]), abs(tf[5])
-        if pw != ph:
-            logger.warning("Warning: raster cells are not square (" + str(pw) + "x" + str(ph) + ") , using" + str(pw))
-        cell_size_m = pw
-        pr("source raster upper left corner (x/y): ",tf[0], tf[3])
-        pr("source raster cells size", cell_size_m, "m ", npim.shape)
-        geo_transform = tf
-
-        def get_GDAL_projection_and_datum(raster):
-            ''' from a valid GDAL raster, get the projection and datum as strings
-            returns: projection, datum
-            '''
-            #local function b/c I need to do this for top and possible bottom raster
-            spatial_ref = raster.GetProjection()
-
-            # Create an OSR SpatialReference object from the spatial reference string
-            sr = osr.SpatialReference()
-            sr.ImportFromWkt(spatial_ref)
-
-            # Get the projection information (projection name)
-            projection = sr.GetAttrValue("PROJECTION")
-
-            # Get the datum information (datum name)
-            datum = sr.GetAttrValue("DATUM")
-
-            return projection, datum
-
-        proj_str, datum_str = get_GDAL_projection_and_datum(dem)
-        crs_str = proj_str # for local rasters, we use the projection string
-
-        # if we have a GDAL undefined value, set all cells with that value to NaN
-        dem_undef_val = band.GetNoDataValue()
-        pr("undefined DEM value:", dem_undef_val)
-        if dem_undef_val != None:  # None means the raster is not a geotiff, so no undef values
-            undef_cells = numpy.isclose(npim, dem_undef_val) # bool with cells that are close to the GDAL undef value
-            npim = numpy.where(undef_cells, numpy.nan, npim) # replace GDAL undef values with nan
-
-
-        # for a bottom raster or a thickness raster, check that it matches the top raster
-        if bottom_elevation != None or top_thickness != None:
-            if bottom_elevation != None:
-                ras = gdal.Open(bottom_elevation) # using ras here b/c it can be one of two rasters
-            else:
-                ras = gdal.Open(top_thickness)
-            ras_band = ras.GetRasterBand(1)
-            ras_npim = ras_band.ReadAsArray().astype(numpy.float64) # bottom elevation or thickness values as numpy array
-            ras_tf = ras.GetGeoTransform()
-            ras_pw, ras_ph = abs(ras_tf[1]), abs(ras_tf[5]) # pixel width and height
-            if ras_pw != pw or ras_ph != ph:
-                logger.warning("Warning: bottom_elevation or top_thickness raster cells are not square (" + str(ras_pw) + "x" + str(ras_ph) + ") , using" + str(ras_pw))
-            ras_cell_size_m = ras_pw
-
-            if dem.RasterXSize != ras.RasterXSize or dem.RasterYSize != ras.RasterYSize:
-                assert False, f"Error: bottom_elevation or top_thickness raster sizes ({ras.RasterXSize} x {ras.RasterYSize}) does not match (top) DEM size ({dem.RasterXSize} x {dem.RasterYSize})"
-
-            if ras_cell_size_m != cell_size_m: # do bottom/thickness cells match top cells?
-                assert False, f"Error: bottom_elevation or top_thickness raster cell size ({ras_cell_size_m}) does not match (top) DEM cell size ({cell_size_m})"
-
-            # get and compare projection and datum
-            ras_proj_str, ras_datum_str = get_GDAL_projection_and_datum(ras)
-            if ras_proj_str != proj_str or ras_datum_str != datum_str:
-                assert False, f"Error: bottom_elevation or top_thickness raster projection ({ras_proj_str}) or datum ({ras_datum_str}) does not match (top) DEM projection ({proj_str}) or datum ({datum_str})"
-
-            # get undef value and write it into the numpy array
-            ras_undef_val = ras_band.GetNoDataValue()
-            pr("undefined bottom elevation or thickness value:", ras_undef_val)
-            if ras_undef_val != None:  # None means the raster is not a geotiff so we don't support undef values
-                undef_cells = numpy.isclose(ras_npim, ras_undef_val) # bool with cells that are close to the undef value
-                ras_npim = numpy.where(undef_cells, numpy.nan, ras_npim) # replace undef values with nan
-
-            # get bottom elevation as numpy array or create it be subtracting thickness from top elevation
-            if bottom_elevation != None:
-                bot_npim = ras_npim # numpy array to be used later
-            else:
-                bot_npim = npim - ras_npim   # bottom = top - thickness
-                del ras_npim # don't need it anymore
-                # Pretend we have a bottom elevation raster of that name so all further checks for bottom will work
-                bottom_elevation = top_thickness
-
-            # close/delete the GDAL raster and band here, b/c I only need the numpy array from now on (and meta data has been stored)
-            ras = None # close the GDAL raster on disk
-            del ras_band
-
-
-        # Print out some info about the raster
-        pr("DEM (top) raster file:", importedDEM)
-        if top_thickness != None and top_thickness != '':
-            pr("Top thickness raster file:", top_thickness)
-        elif bottom_elevation != None:
-            pr("Bottom elevation raster file:", bottom_elevation)
-        pr("DEM projection & datum:", proj_str, datum_str)
-        pr("z-scale:", zscale)
-        pr("min_elev:", min_elev)
-        pr("basethickness:", basethick)
-        pr("fileformat:", fileformat)
-        pr("tile_centered:", tile_centered)
-        pr("no_bottom:", no_bottom)
-        pr("no_normals:", no_normals)
-        pr("ignore_leq:", ignore_leq)
-        pr("lower_leq:", lower_leq)
-        pr("importedGPX:", importedGPX)
-        #pr("polyURL:", polyURL)
-
-        # Warn that anything with polygon will be ignored with a local raster (other than offset_masks!)
-        if polygon != None or  (polyURL != None and polyURL != ''):
-            pr("Warning: Given outline polygon will be ignored when using local raster file!")
-
-        # Add GPX points to the model (thanks KohlhardtC and ansonl!)
-        if importedGPX != None and importedGPX != []:
-            from touchterrain.common.TouchTerrainGPX import addGPXToModel
-            addGPXToModel(pr, npim, dem, importedGPX,
-                          gpxPathHeight, gpxPixelsBetweenPoints, gpxPathThickness,
-                          trlat, trlon, bllat, bllon)
-
-        # clip values?
-        if ignore_leq != None:
-            npim = numpy.where(npim <= ignore_leq, numpy.nan, npim)
-            pr("ignoring elevations <= ", ignore_leq, " (were set to NaN)")
-
-
-        # if tilewidth_scale is given, overwrite mm tilewidth by region width / tilewidth_scale
-        if tilewidth_scale != None:
-            tilewidth = region_size_in_meters[1] / tilewidth_scale * 1000 # new tilewidth in mm
-            pr("Overriding tilewidth using a tilewidth_scale of 1 :", tilewidth_scale, ", region width is", region_size_in_meters[1], "m, new tilewidth is", tilewidth, "mm. (Note that the final scale may be slighly different!)")
-
-
-        # tile height
-        whratio = npim.shape[0] / float(npim.shape[1])
-        tileheight = tilewidth  * whratio
-        pr("tile_width:", tilewidth)
-        pr("tile_height:", tileheight)
-        print3D_width_per_tile = tilewidth
-        print3D_height_per_tile = tileheight
-        print3D_width_total_mm =  print3D_width_per_tile * num_tiles[0]
-        real_world_total_width_m = npim.shape[1] * cell_size_m
-        pr("source raster width", real_world_total_width_m, "m,", "cell size:", cell_size_m, "m, elev. min/max is", numpy.nanmin(npim), numpy.nanmax(npim), "m")
-
-        # What would be the 3D print resolution using the original/unresampled source resolution?
-        source_print3D_resolution =  (tilewidth*ntilesx) / float(npim.shape[1])
-        pr("source raster 3D print resolution would be", source_print3D_resolution, "mm")
-
-        # Resample raster to get requested printres?
-        if printres <= 0: # use of source resolution was requested (typically set as -1)
-                pr("no resampling, using source resolution of ", source_print3D_resolution, "mm for a total model width of", print3D_width_total_mm, "mm")
-                if source_print3D_resolution < 0.2 and fileformat != "GeoTiff":
-                    pr("Warning: this print resolution of", source_print3D_resolution, "mm is pretty small for a typical nozzle size of 0.4 mm. You might want to use a printres that's just a bit smaller than your nozzle size ...")
-                print3D_resolution_mm = source_print3D_resolution
-
-        else: # yes, resample
-            scale_factor = print3D_resolution_mm / float(source_print3D_resolution)
-            if scale_factor < 1.0:
-                pr("Warning: will re-sample to a resolution finer than the original source raster. Consider instead a value for printres >", source_print3D_resolution)
-
-            # re-sample DEM (and bottom_elevation) using PIL
-            pr("re-sampling", filename, ":\n ", npim.shape[::-1], source_print3D_resolution, "mm ", cell_size_m, "m ", numpy.nanmin(npim), "-", numpy.nanmax(npim), "m")
-            npim =  resampleDEM(npim, scale_factor)
-            if bottom_elevation != None:
-                pr("re-sampling", bottom_elevation, ":\n ", bot_npim.shape[::-1], source_print3D_resolution, "mm ", cell_size_m, "m ", numpy.nanmin(bot_npim), "-", numpy.nanmax(bot_npim), "m")
-                bot_npim =  resampleDEM(bot_npim, scale_factor)
-
-            # re-sample offset mask
-            for index, offset_layer in enumerate(offset_npim):
-                pr("re-sampling offset layer",index, ":\n ", offset_layer.shape[::-1], source_print3D_resolution, "mm ", cell_size_m, "m ", numpy.nanmin(offset_layer), "-", numpy.nanmax(offset_layer), "m")
-                offset_npim[index] = resampleDEM(offset_layer, scale_factor)
-
-            #
-            # based on the full raster's shape and given the model width, recalc the model height
-            # and the adjusted printres that will give that width from the resampled raster
-            #
-            region_ratio =  npim.shape[0] / float(npim.shape[1])
-            print3D_width_per_tile = tilewidth # EW
-            print3D_height_per_tile = (print3D_width_per_tile * num_tiles[0] * region_ratio) / float(num_tiles[1]) # NS
-            print3D_width_total_mm =  print3D_width_per_tile * num_tiles[0] # width => EW
-            print3D_height_total_mm = print3D_width_total_mm * region_ratio   # height => NS
-            adjusted_print3D_resolution = print3D_width_total_mm / float(npim.shape[1])
-
-            cell_size_m *= scale_factor
-            pr(" ",npim.shape[::-1], adjusted_print3D_resolution, "mm ", cell_size_m, "m ", numpy.nanmin(npim), "-", numpy.nanmax(npim), "m")
-
-            if adjusted_print3D_resolution != print3D_resolution_mm:
-                pr("after resampling, requested print res was adjusted from", print3D_resolution_mm, "to", adjusted_print3D_resolution, "to ensure correct model dimensions")
-                print3D_resolution_mm = adjusted_print3D_resolution
-            else:
-                pr("print res is", print3D_resolution_mm, "mm")
-
-        DEM_title = filename[:filename.rfind('.')]
-    # end of B: (local raster file)
-
     # Make empty zip file in temp_folder, add files into it later
     total_size = 0 # size of stl/objs/geotiff file(s) in byes
     full_zip_file_name =  temp_folder + os.sep + zip_file_name + ".zip"
@@ -1474,8 +1157,6 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
 
         if importedDEM == None:
             DEM_name = DEM_name.replace("/","-") # replace / with - to be safe
-        else:
-            DEM_name = filename
 
         # Adjust raster to nice multiples of tiles. If needed, crop raster from right and bottom
         remx = npim.shape[1] % num_tiles[0]
@@ -1966,37 +1647,37 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
 
     # ---------------- landcover texture export ----------------
     # 1 – make sure we’re in the same projected CRS (metres) as the DEM/STL logic
-    gdf_m = gdf_final.to_crs(epsg)      # already metres, but call is idempotent
+    # gdf_m = gdf_final.to_crs(epsg)      # already metres, but call is idempotent
 
-    px = abs(geo_transform[1])      # cell width   (m)
-    py = abs(geo_transform[5])      # cell height  (m)
-    print("px, py:", px, py)
-    # 2 – build an affine that maps “metres in EPSG” → “millimetres in STL”
-    ulx, uly = geo_transform[0], geo_transform[3]          # upper-left corner of raster
+    # px = abs(geo_transform[1])      # cell width   (m)
+    # py = abs(geo_transform[5])      # cell height  (m)
+    # print("px, py:", px, py)
+    # # 2 – build an affine that maps “metres in EPSG” → “millimetres in STL”
+    # ulx, uly = geo_transform[0], geo_transform[3]          # upper-left corner of raster
 
-    rows = npim.shape[0]                # total number of rows (south-to-north)
-    bly = geo_transform[3] - rows * py                  # UL-Y – full raster height
+    # rows = npim.shape[0]                # total number of rows (south-to-north)
+    # bly = geo_transform[3] - rows * py                  # UL-Y – full raster height
 
-    mm_per_m = 1000.0 / print3D_scale_number               # 1 model mm equals N real metres
+    # mm_per_m = 1000.0 / print3D_scale_number               # 1 model mm equals N real metres
 
-    def _to_stl_mm(x, y, z=None):
-        # x_mm = (x - ulx) * mm_per_m
-        # y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
-        # x_mm = (x - ulx - px / 2.0) * mm_per_m
-        # y_mm = (y - bly - py / 2.0) * mm_per_m   # one flip (north→south) already!
-        x_mm = (x - ulx) * mm_per_m
-        y_mm = (y - bly - py * 2) * mm_per_m   # one flip (north→south) already!
-        if tile_centered:                # optional global centring
-            x_mm -= print3D_width_total_mm  / 2.0
-            y_mm -= print3D_height_total_mm / 2.0
-        return (x_mm, y_mm)
+    # def _to_stl_mm(x, y, z=None):
+    #     # x_mm = (x - ulx) * mm_per_m
+    #     # y_mm = (uly - y) * mm_per_m      # negate: raster rows grow southward
+    #     # x_mm = (x - ulx - px / 2.0) * mm_per_m
+    #     # y_mm = (y - bly - py / 2.0) * mm_per_m   # one flip (north→south) already!
+    #     x_mm = (x - ulx) * mm_per_m
+    #     y_mm = (y - bly - py * 2) * mm_per_m   # one flip (north→south) already!
+    #     if tile_centered:                # optional global centring
+    #         x_mm -= print3D_width_total_mm  / 2.0
+    #         y_mm -= print3D_height_total_mm / 2.0
+    #     return (x_mm, y_mm)
 
-    # 3 – apply the transform to every geometry; drop the CRS tag afterward
-    gdf_stl = gdf_m.copy()
-    gdf_stl["geometry"] = gdf_stl.geometry.apply(
-        lambda geom: transform(_to_stl_mm, geom)
-    )
-    gdf_stl.set_crs(None, inplace=True, allow_override=True)   # STL has no declared CRS
+    # # 3 – apply the transform to every geometry; drop the CRS tag afterward
+    # gdf_stl = gdf_m.copy()
+    # gdf_stl["geometry"] = gdf_stl.geometry.apply(
+    #     lambda geom: transform(_to_stl_mm, geom)
+    # )
+    # gdf_stl.set_crs(None, inplace=True, allow_override=True)   # STL has no declared CRS
 
     # gdf_stl now uses the exact same XY coordinates (millimetres) that appear in the STL mesh
     # --------------------------------------------------------
@@ -2031,151 +1712,151 @@ def get_zipped_tiles(DEM_name=None, trlat=None, trlon=None, bllat=None, bllon=No
     # ---------------------------------------------------------------------
     # 3.  prepare land-cover → colour dictionary  (0-1 floats)
     # ---------------------------------------------------------------------
-    covers = gdf_stl["cover"].fillna("unknown").unique()
-    palette = {c: tuple(random.random() for _ in range(3)) for c in covers}
-    default_colour = (0.5, 0.5, 0.5)
+    # covers = gdf_stl["cover"].fillna("unknown").unique()
+    # palette = {c: tuple(random.random() for _ in range(3)) for c in covers}
+    # default_colour = (0.5, 0.5, 0.5)
 
     # ---------------------------------------------------------------------
     # 4.  spatial lookup: assign a colour to every vertex
     #    • fast bounding-box filter via the GeoPandas spatial index
     #    • then exact .contains() check
     # ---------------------------------------------------------------------
-    sindex = gdf_stl.sindex
-    colours = []
-    for x, y, z in verts_np:
-        pt = Point(x, y)
-        hit = default_colour
-        for idx in sindex.intersection(pt.coords[0]):         # bbox candidates
-            if gdf_stl.iloc[idx].geometry.contains(pt):
-                hit = palette[gdf_stl.iloc[idx]["cover"]]
-                break
-        colours.append(hit)
-    colours = np.asarray(colours)       # (N,3)
+    # sindex = gdf_stl.sindex
+    # colours = []
+    # for x, y, z in verts_np:
+    #     pt = Point(x, y)
+    #     hit = default_colour
+    #     for idx in sindex.intersection(pt.coords[0]):         # bbox candidates
+    #         if gdf_stl.iloc[idx].geometry.contains(pt):
+    #             hit = palette[gdf_stl.iloc[idx]["cover"]]
+    #             break
+    #     colours.append(hit)
+    # colours = np.asarray(colours)       # (N,3)
 
 
-    print("Extents of texture and STL in common coordinates:")
-    print(m.vectors.reshape(-1,3)[:, :2].min(axis=0),  # STL XY min
-    m.vectors.reshape(-1,3)[:, :2].max(axis=0))  # STL XY max
+    # print("Extents of texture and STL in common coordinates:")
+    # print(m.vectors.reshape(-1,3)[:, :2].min(axis=0),  # STL XY min
+    # m.vectors.reshape(-1,3)[:, :2].max(axis=0))  # STL XY max
 
-    print(gdf_stl.total_bounds[:2],                   # land-cover XY min
-        gdf_stl.total_bounds[2:])                   # land-cover XY max
+    # print(gdf_stl.total_bounds[:2],                   # land-cover XY min
+    #     gdf_stl.total_bounds[2:])                   # land-cover XY max
     # ---------------------------------------------------------------------
     # 5.  deduplicate vertices ⇒ OBJ “v” list, build “f” indices
     # ---------------------------------------------------------------------
-    vertex_index = {}          # (x,y,z) → obj_idx
-    v_lines, f_lines = [], []
-    next_idx = 1
+    # vertex_index = {}          # (x,y,z) → obj_idx
+    # v_lines, f_lines = [], []
+    # next_idx = 1
 
-    for tri_i, tri in enumerate(m.vectors):
-        face = []
-        for v_local in range(3):
-            v_tuple = tuple(tri[v_local])
-            try:
-                idx = vertex_index[v_tuple]
-            except KeyError:
-                idx = next_idx
-                vertex_index[v_tuple] = idx
-                c = colours[tri_i * 3 + v_local]
-                v_lines.append(f"v {v_tuple[0]} {v_tuple[1]} {v_tuple[2]} {c[0]} {c[1]} {c[2]}\n")
-                next_idx += 1
-            face.append(idx)
-        f_lines.append(f"f {face[0]} {face[1]} {face[2]}\n")
+    # for tri_i, tri in enumerate(m.vectors):
+    #     face = []
+    #     for v_local in range(3):
+    #         v_tuple = tuple(tri[v_local])
+    #         try:
+    #             idx = vertex_index[v_tuple]
+    #         except KeyError:
+    #             idx = next_idx
+    #             vertex_index[v_tuple] = idx
+    #             c = colours[tri_i * 3 + v_local]
+    #             v_lines.append(f"v {v_tuple[0]} {v_tuple[1]} {v_tuple[2]} {c[0]} {c[1]} {c[2]}\n")
+    #             next_idx += 1
+    #         face.append(idx)
+    #     f_lines.append(f"f {face[0]} {face[1]} {face[2]}\n")
 
     # ---------------------------------------------------------------------
     # 6.  write coloured OBJ   (per-vertex RGB extension, widely supported)
     # ---------------------------------------------------------------------
-    with open(obj_path, "w") as obj:
-        obj.writelines(v_lines)
-        obj.writelines(f_lines)
+    # with open(obj_path, "w") as obj:
+    #     obj.writelines(v_lines)
+    #     obj.writelines(f_lines)
 
-    print(f"Wrote coloured OBJ to {obj_path}")
+    # print(f"Wrote coloured OBJ to {obj_path}")
     # ----------------------------------------------------------------------
     # Break up hexagon tiles
     # ----------------------------------------------------------------------
-    print("Breaking up hexagon tiles into OBJ files ...")
-    # Load the colored OBJ
-    big = trimesh.load_mesh(obj_path, process=False)
+    # print("Breaking up hexagon tiles into OBJ files ...")
+    # # Load the colored OBJ
+    # big = trimesh.load_mesh(obj_path, process=False)
 
-    # Convert hex tiles to STL mm-space
-    hex_gdf = gpd.GeoDataFrame(geometry=[shape(h) for h in tiles_outlines], crs="EPSG:4326")
-    hex_gdf = hex_gdf.to_crs(epsg)
-    hex_polys_stl = [Polygon(transform(_to_stl_mm, h)) for h in hex_gdf.geometry]
+    # # Convert hex tiles to STL mm-space
+    # hex_gdf = gpd.GeoDataFrame(geometry=[shape(h) for h in tiles_outlines], crs="EPSG:4326")
+    # hex_gdf = hex_gdf.to_crs(epsg)
+    # hex_polys_stl = [Polygon(transform(_to_stl_mm, h)) for h in hex_gdf.geometry]
 
-    # Get z-range and prepare colors
-    z_min, z_max = big.bounds[0][2], big.bounds[1][2]
-    padding = 10  # mm padding
+    # # Get z-range and prepare colors
+    # z_min, z_max = big.bounds[0][2], big.bounds[1][2]
+    # padding = 10  # mm padding
 
-    # Create spatial index for original landcover polygons
-    sindex = gdf_stl.sindex
+    # # Create spatial index for original landcover polygons
+    # sindex = gdf_stl.sindex
 
-    # Prepare color palette (same as original)
-    cover_types = gdf_stl["cover"].fillna("unknown").unique()
+    # # Prepare color palette (same as original)
+    # cover_types = gdf_stl["cover"].fillna("unknown").unique()
 
-    # Use a consistent colormap (e.g., matplotlib tab20)
-    cmap = plt.get_cmap('tab20')
+    # # Use a consistent colormap (e.g., matplotlib tab20)
+    # cmap = plt.get_cmap('tab20')
 
-    palette = {
-        cover: (*[int(255*x) for x in to_rgb(cmap(i%20))], 255)
-        for i, cover in enumerate(cover_types)
-    }
-    default_color = (153, 153, 153, 255)  # neutral grey
+    # palette = {
+    #     cover: (*[int(255*x) for x in to_rgb(cmap(i%20))], 255)
+    #     for i, cover in enumerate(cover_types)
+    # }
+    # default_color = (153, 153, 153, 255)  # neutral grey
 
-    # # Extract original face colors if they exist
-    # if hasattr(big.visual, 'vertex_colors'):
-    #     original_colors = big.visual.vertex_colors[big.faces]  # Get colors per face
-    #     has_colors = True
-    # else:
-    #     has_colors = False
+    # # # Extract original face colors if they exist
+    # # if hasattr(big.visual, 'vertex_colors'):
+    # #     original_colors = big.visual.vertex_colors[big.faces]  # Get colors per face
+    # #     has_colors = True
+    # # else:
+    # #     has_colors = False
 
-    for hx_i, hx_poly in enumerate(hex_polys_stl, start=1):
-        print(f"Processing hexagon #{hx_i}...")
+    # for hx_i, hx_poly in enumerate(hex_polys_stl, start=1):
+    #     print(f"Processing hexagon #{hx_i}...")
         
-        try:
-            # Create hex prism
-            hex_mesh = trimesh.creation.extrude_polygon(
-                polygon=hx_poly,
-                height=(z_max - z_min) + 2*padding,
-                transform=trimesh.transformations.translation_matrix([0, 0, z_min - padding])
-            )
+    #     try:
+            # # Create hex prism
+            # hex_mesh = trimesh.creation.extrude_polygon(
+            #     polygon=hx_poly,
+            #     height=(z_max - z_min) + 2*padding,
+            #     transform=trimesh.transformations.translation_matrix([0, 0, z_min - padding])
+            # )
             
-            # Perform boolean intersection
-            tile_mesh = hex_mesh.intersection(big)
+            # # Perform boolean intersection
+            # tile_mesh = hex_mesh.intersection(big)
             
-            if tile_mesh.is_empty:
-                print(f"  Hexagon #{hx_i} is empty, skipping")
-                continue
+    #         if tile_mesh.is_empty:
+    #             print(f"  Hexagon #{hx_i} is empty, skipping")
+    #             continue
             
-            # Initialize vertex colors (default grey)
-            colors = np.full((len(tile_mesh.vertices), 4), default_color)
+    #         # Initialize vertex colors (default grey)
+    #         colors = np.full((len(tile_mesh.vertices), 4), default_color)
 
-            # tile_mesh.visual.vertex_colors = [255, 255, 255, 255]  # white base
-            top_faces = tile_mesh.face_normals[:,2] > 0.5
-            top_verts = np.unique(tile_mesh.faces[top_faces].ravel())
+    #         # tile_mesh.visual.vertex_colors = [255, 255, 255, 255]  # white base
+    #         top_faces = tile_mesh.face_normals[:,2] > 0.5
+    #         top_verts = np.unique(tile_mesh.faces[top_faces].ravel())
         
-            # Assign colors to top vertices using spatial lookup
-            for vi in top_verts:
-                x, y, _ = tile_mesh.vertices[vi]
-                pt = Point(x, y)
+    #         # Assign colors to top vertices using spatial lookup
+    #         for vi in top_verts:
+    #             x, y, _ = tile_mesh.vertices[vi]
+    #             pt = Point(x, y)
                 
-                # Fast bounding box query first
-                possible = list(sindex.intersection(pt.coords[0]))
-                for idx in possible:
-                    if gdf_stl.iloc[idx].geometry.contains(pt):
-                        cover_type = gdf_stl.iloc[idx]["cover"]
-                        # colors[vi] = palette.get(cover_type, (153,153,153)), 255
-                        colors[vi] = palette.get(cover_type, default_color)
-                        break
-            tile_mesh.visual.vertex_colors = colors
-            # for face in tile_mesh.faces[top_faces]:
-            #     tile_mesh.visual.vertex_colors[face] = [100, 200, 100, 255]  # green top
-            # Export
-            out_path = obj_path.with_name(f"{obj_path.stem}_hex{hx_i}.obj")
-            tile_mesh.export(out_path)
-            print(f"✓ Hexagonal tile #{hx_i} exported: {out_path}")
+    #             # Fast bounding box query first
+    #             possible = list(sindex.intersection(pt.coords[0]))
+    #             for idx in possible:
+    #                 if gdf_stl.iloc[idx].geometry.contains(pt):
+    #                     cover_type = gdf_stl.iloc[idx]["cover"]
+    #                     # colors[vi] = palette.get(cover_type, (153,153,153)), 255
+    #                     colors[vi] = palette.get(cover_type, default_color)
+    #                     break
+    #         tile_mesh.visual.vertex_colors = colors
+    #         # for face in tile_mesh.faces[top_faces]:
+    #         #     tile_mesh.visual.vertex_colors[face] = [100, 200, 100, 255]  # green top
+    #         # Export
+    #         out_path = obj_path.with_name(f"{obj_path.stem}_hex{hx_i}.obj")
+    #         tile_mesh.export(out_path)
+    #         print(f"✓ Hexagonal tile #{hx_i} exported: {out_path}")
             
-        except Exception as e:
-            print(f"Failed on hex {hx_i}: {str(e)}")
-            continue
+    #     except Exception as e:
+    #         print(f"Failed on hex {hx_i}: {str(e)}")
+    #         continue
     # ----------------------------------------------------------------------
     # remove folder
     rmtree(folder)
