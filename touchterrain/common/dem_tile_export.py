@@ -72,7 +72,7 @@ def fetch_dem_with_fringe(
 def dem_to_surface_stl(
     dem_np: np.ndarray,
     bbox: dict,
-    out_stl: str | Path = "dem_surface.stl",
+    out_stl: str | Path = None,
     vertical_exaggeration: float = 1.0,
     show_k3d: bool = True,
 ) -> trimesh.Trimesh:
@@ -100,8 +100,10 @@ def dem_to_surface_stl(
                 faces.append([i00, i11, i10])
 
     mesh = trimesh.Trimesh(vertices=verts, faces=np.array(faces), process=False)
-    mesh.export(out_stl)
-    print(f"✓ STL written to {Path(out_stl).resolve()}")
+
+    if out_stl:
+        mesh.export(out_stl)
+        print(f"✓ STL written to {Path(out_stl).resolve()}")
 
     if show_k3d:
         plot = k3d.plot()
@@ -173,7 +175,7 @@ def clip_dem_block(
     dem_block: trimesh.Trimesh,
     aoi_geojson: dict,
     out_stl: str | Path = "dem_clipped.stl",
-    prism_stl: str | Path = "aoi_prism.stl",
+    prism_stl: str | Path = None,
     z_padding: float = 20.0,
     project_crs: str | None = "auto",
     xy_scale: float = 1.0,
@@ -212,8 +214,9 @@ def clip_dem_block(
         prisms.append(prism)
 
     aoi_prism = trimesh.util.concatenate(prisms) if len(prisms) > 1 else prisms[0]
-    aoi_prism.export(prism_stl)
-    print(f"✓ AOI prism STL saved: {Path(prism_stl).resolve()}")
+    if prism_stl:
+        aoi_prism.export(prism_stl)
+        print(f"✓ AOI prism STL saved: {Path(prism_stl).resolve()}")
 
     print("⧗ Boolean intersection …")
     clipped = dem_block_proj.intersection(aoi_prism, check_volume=True)
